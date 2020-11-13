@@ -42,6 +42,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 @Internal
 public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T, ?>> {
+	private AsyncDataOutputToOutput<T> output;
 
 	public SourceOperatorStreamTask(Environment env) throws Exception {
 		super(env);
@@ -49,12 +50,12 @@ public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T,
 
 	@Override
 	public void init() {
-		StreamTaskInput<T> input = new StreamTaskSourceInput<>(mainOperator, 0);
+		StreamTaskInput<T> input = new StreamTaskSourceInput<>(mainOperator, 0, 0);
 		/**
 		 * {@link SourceOperatorStreamTask} doesn't have any inputs, so there is no need for
 		 * {@link WatermarkGauge} on the input.
 		 */
-		DataOutput<T> output = new AsyncDataOutputToOutput<>(
+		output = new AsyncDataOutputToOutput<>(
 			operatorChain.getMainOperatorOutput(),
 			getStreamStatusMaintainer(),
 			null);
@@ -63,6 +64,11 @@ public class SourceOperatorStreamTask<T> extends StreamTask<T, SourceOperator<T,
 			input,
 			output,
 			operatorChain);
+	}
+
+	@Override
+	protected void advanceToEndOfEventTime() {
+		output.emitWatermark(Watermark.MAX_WATERMARK);
 	}
 
 	/**

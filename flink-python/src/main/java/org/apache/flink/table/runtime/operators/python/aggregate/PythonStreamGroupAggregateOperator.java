@@ -29,6 +29,7 @@ import org.apache.flink.core.memory.ByteArrayInputStreamWithPos;
 import org.apache.flink.core.memory.ByteArrayOutputStreamWithPos;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
 import org.apache.flink.python.PythonFunctionRunner;
 import org.apache.flink.python.PythonOptions;
@@ -39,16 +40,17 @@ import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.apache.flink.streaming.api.operators.Triggerable;
 import org.apache.flink.streaming.api.operators.python.AbstractOneInputPythonFunctionOperator;
+import org.apache.flink.streaming.api.utils.PythonOperatorUtils;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.UpdatableRowData;
+import org.apache.flink.table.functions.python.PythonAggregateFunctionInfo;
 import org.apache.flink.table.functions.python.PythonEnv;
-import org.apache.flink.table.functions.python.PythonFunctionInfo;
 import org.apache.flink.table.planner.plan.utils.KeySelectorUtil;
+import org.apache.flink.table.planner.typeutils.DataViewUtils;
 import org.apache.flink.table.runtime.functions.CleanupState;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
-import org.apache.flink.table.runtime.operators.python.utils.PythonOperatorUtils;
 import org.apache.flink.table.runtime.operators.python.utils.StreamRecordRowDataWrappingCollector;
 import org.apache.flink.table.runtime.runners.python.beam.BeamTableStatefulPythonFunctionRunner;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
@@ -103,7 +105,9 @@ public class PythonStreamGroupAggregateOperator
 	 */
 	private final Map<String, String> jobOptions;
 
-	private final PythonFunctionInfo[] aggregateFunctions;
+	private final PythonAggregateFunctionInfo[] aggregateFunctions;
+
+	private final DataViewUtils.DataViewSpec[][] dataViewSpecs;
 
 	/**
 	 * The array of the key indexes.
@@ -114,6 +118,11 @@ public class PythonStreamGroupAggregateOperator
 	 * The index of a count aggregate used to calculate the number of accumulated rows.
 	 */
 	private final int indexOfCountStar;
+
+	/**
+	 * True if the count(*) agg is inserted by the planner.
+	 */
+	private final boolean countStarInserted;
 
 	/**
 	 * Generate retract messages if true.
@@ -133,7 +142,14 @@ public class PythonStreamGroupAggregateOperator
 	/**
 	 * The maximum NUMBER of the states cached in Python side.
 	 */
-	private int stateCacheSize;
+	private final int stateCacheSize;
+
+	/**
+	 * The maximum number of cached entries in a single Python MapState.
+	 */
+	private final int mapStateReadCacheSize;
+
+	private final int mapStateWriteCacheSize;
 
 	/**
 	 * Indicates whether state cleaning is enabled. Can be calculated from the `minRetentionTime`.
@@ -194,9 +210,11 @@ public class PythonStreamGroupAggregateOperator
 			Configuration config,
 			RowType inputType,
 			RowType outputType,
-			PythonFunctionInfo[] aggregateFunctions,
+			PythonAggregateFunctionInfo[] aggregateFunctions,
+			DataViewUtils.DataViewSpec[][] dataViewSpecs,
 			int[] grouping,
 			int indexOfCountStar,
+			boolean countStarInserted,
 			boolean generateUpdateBefore,
 			long minRetentionTime,
 			long maxRetentionTime) {
@@ -204,13 +222,18 @@ public class PythonStreamGroupAggregateOperator
 		this.inputType = Preconditions.checkNotNull(inputType);
 		this.outputType = Preconditions.checkNotNull(outputType);
 		this.aggregateFunctions = aggregateFunctions;
+		this.dataViewSpecs = dataViewSpecs;
 		this.jobOptions = buildJobOptions(config);
 		this.grouping = grouping;
 		this.indexOfCountStar = indexOfCountStar;
+		this.countStarInserted = countStarInserted;
 		this.generateUpdateBefore = generateUpdateBefore;
 		this.minRetentionTime = minRetentionTime;
 		this.maxRetentionTime = maxRetentionTime;
 		this.stateCleaningEnabled = minRetentionTime > 1;
+		this.stateCacheSize = config.get(PythonOptions.STATE_CACHE_SIZE);
+		this.mapStateReadCacheSize = config.get(PythonOptions.MAP_STATE_READ_CACHE_SIZE);
+		this.mapStateWriteCacheSize = config.get(PythonOptions.MAP_STATE_WRITE_CACHE_SIZE);
 	}
 
 	/**
@@ -267,7 +290,12 @@ public class PythonStreamGroupAggregateOperator
 			jobOptions,
 			getFlinkMetricContainer(),
 			getKeyedStateBackend(),
-			getKeySerializer());
+			getKeySerializer(),
+			getContainingTask().getEnvironment().getMemoryManager(),
+			getOperatorConfig().getManagedMemoryFractionOperatorUseCaseOfSlot(
+				ManagedMemoryUseCase.PYTHON,
+				getContainingTask().getEnvironment().getTaskManagerInfo().getConfiguration(),
+				getContainingTask().getEnvironment().getUserCodeClassLoader().asClassLoader()));
 	}
 
 	@Override
@@ -346,8 +374,12 @@ public class PythonStreamGroupAggregateOperator
 		if (config.containsKey("table.exec.timezone")) {
 			jobOptions.put("table.exec.timezone", config.getString("table.exec.timezone", null));
 		}
-		stateCacheSize = config.get(PythonOptions.STATE_CACHE_SIZE);
-		jobOptions.put(PythonOptions.STATE_CACHE_SIZE.key(), String.valueOf(stateCacheSize));
+		jobOptions.put(
+			PythonOptions.STATE_CACHE_SIZE.key(),
+			String.valueOf(config.get(PythonOptions.STATE_CACHE_SIZE)));
+		jobOptions.put(
+			PythonOptions.MAP_STATE_ITERATE_RESPONSE_BATCH_SIZE.key(),
+			String.valueOf(config.get(PythonOptions.MAP_STATE_ITERATE_RESPONSE_BATCH_SIZE)));
 		return jobOptions;
 	}
 
@@ -378,16 +410,24 @@ public class PythonStreamGroupAggregateOperator
 	public FlinkFnApi.UserDefinedAggregateFunctions getUserDefinedFunctionsProto() {
 		FlinkFnApi.UserDefinedAggregateFunctions.Builder builder =
 			FlinkFnApi.UserDefinedAggregateFunctions.newBuilder();
-		for (PythonFunctionInfo pythonFunctionInfo : aggregateFunctions) {
-			builder.addUdfs(PythonOperatorUtils.getUserDefinedFunctionProto(pythonFunctionInfo));
+		for (int i = 0; i < aggregateFunctions.length; i++) {
+			DataViewUtils.DataViewSpec[] specs = null;
+			if (i < dataViewSpecs.length) {
+				specs = dataViewSpecs[i];
+			}
+			builder.addUdfs(
+				PythonOperatorUtils.getUserDefinedAggregateFunctionProto(aggregateFunctions[i], specs));
 		}
 		builder.setMetricEnabled(getPythonConfig().isMetricEnabled());
 		builder.addAllGrouping(Arrays.stream(grouping).boxed().collect(Collectors.toList()));
 		builder.setGenerateUpdateBefore(generateUpdateBefore);
 		builder.setIndexOfCountStar(indexOfCountStar);
+		builder.setCountStarInserted(countStarInserted);
 		builder.setKeyType(toProtoType(getKeyType()));
 		builder.setStateCleaningEnabled(stateCleaningEnabled);
 		builder.setStateCacheSize(stateCacheSize);
+		builder.setMapStateReadCacheSize(mapStateReadCacheSize);
+		builder.setMapStateWriteCacheSize(mapStateWriteCacheSize);
 		return builder.build();
 	}
 }

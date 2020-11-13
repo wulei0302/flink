@@ -43,12 +43,6 @@ under the License.
 				<artifactId>okhttp</artifactId>
 				<version>3.12.1</version>
 			</dependency>
-			<dependency>
-				<!-- Bumped for security purposes -->
-				<groupId>org.yaml</groupId>
-				<artifactId>snakeyaml</artifactId>
-				<version>1.27</version>
-			</dependency>
 		</dependencies>
 	</dependencyManagement>
 
@@ -111,6 +105,14 @@ under the License.
 
 	<build>
 		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<reuseForks>true</reuseForks>
+					<forkCount>1</forkCount>
+				</configuration>
+			</plugin>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-shade-plugin</artifactId>

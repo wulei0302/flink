@@ -26,9 +26,11 @@ import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.ArrayType;
+import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.MapType;
+import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 
@@ -60,8 +62,19 @@ public class RowDataToJsonConverters implements Serializable {
 	/** Timestamp format specification which is used to parse timestamp. */
 	private final TimestampFormat timestampFormat;
 
-	public RowDataToJsonConverters(TimestampFormat timestampFormat) {
+	/** The handling mode when serializing null keys for map data. */
+	private final JsonOptions.MapNullKeyMode mapNullKeyMode;
+
+	/** The string literal when handling mode for map null key LITERAL. is  */
+	private final String mapNullKeyLiteral;
+
+	public RowDataToJsonConverters(
+			TimestampFormat timestampFormat,
+			JsonOptions.MapNullKeyMode mapNullKeyMode,
+			String mapNullKeyLiteral) {
 		this.timestampFormat = timestampFormat;
+		this.mapNullKeyMode = mapNullKeyMode;
+		this.mapNullKeyLiteral = mapNullKeyLiteral;
 	}
 
 	/**
@@ -122,8 +135,13 @@ public class RowDataToJsonConverters implements Serializable {
 			case ARRAY:
 				return createArrayConverter((ArrayType) type);
 			case MAP:
+				MapType mapType = (MapType) type;
+				return createMapConverter(
+					mapType.asSummaryString(), mapType.getKeyType(), mapType.getValueType());
 			case MULTISET:
-				return createMapConverter((MapType) type);
+				MultisetType multisetType = (MultisetType) type;
+				return createMapConverter
+					(multisetType.asSummaryString(), multisetType.getElementType(), new IntType());
 			case ROW:
 				return createRowConverter((RowType) type);
 			case RAW:
@@ -196,6 +214,7 @@ public class RowDataToJsonConverters implements Serializable {
 	private RowDataToJsonConverter createArrayConverter(ArrayType type) {
 		final LogicalType elementType = type.getElementType();
 		final RowDataToJsonConverter elementConverter = createConverter(elementType);
+		final ArrayData.ElementGetter elementGetter = ArrayData.createElementGetter(elementType);
 		return (mapper, reuse, value) -> {
 			ArrayNode node;
 
@@ -210,7 +229,7 @@ public class RowDataToJsonConverters implements Serializable {
 			ArrayData array = (ArrayData) value;
 			int numElements = array.size();
 			for (int i = 0; i < numElements; i++) {
-				Object element = ArrayData.get(array, i, elementType);
+				Object element = elementGetter.getElementOrNull(array, i);
 				node.add(elementConverter.convert(mapper, null, element));
 			}
 
@@ -218,15 +237,15 @@ public class RowDataToJsonConverters implements Serializable {
 		};
 	}
 
-	private RowDataToJsonConverter createMapConverter(MapType type) {
-		LogicalType keyType = type.getKeyType();
+	private RowDataToJsonConverter createMapConverter(
+			String typeSummary, LogicalType keyType, LogicalType valueType) {
 		if (!LogicalTypeChecks.hasFamily(keyType, LogicalTypeFamily.CHARACTER_STRING)) {
 			throw new UnsupportedOperationException(
 				"JSON format doesn't support non-string as key type of map. " +
-					"The map type is: " + type.asSummaryString());
+					"The type is: " + typeSummary);
 		}
-		final LogicalType valueType = type.getValueType();
 		final RowDataToJsonConverter valueConverter = createConverter(valueType);
+		final ArrayData.ElementGetter valueGetter = ArrayData.createElementGetter(valueType);
 		return (mapper, reuse, object) -> {
 			ObjectNode node;
 			// reuse could be a NullNode if last record is null.
@@ -234,6 +253,7 @@ public class RowDataToJsonConverters implements Serializable {
 				node = mapper.createObjectNode();
 			} else {
 				node = (ObjectNode) reuse;
+				node.removeAll();
 			}
 
 			MapData map = (MapData) object;
@@ -241,8 +261,28 @@ public class RowDataToJsonConverters implements Serializable {
 			ArrayData valueArray = map.valueArray();
 			int numElements = map.size();
 			for (int i = 0; i < numElements; i++) {
-				String fieldName = keyArray.getString(i).toString(); // key must be string
-				Object value = ArrayData.get(valueArray, i, valueType);
+				String fieldName = null;
+				if (keyArray.isNullAt(i)) {
+					// when map key is null
+					switch (mapNullKeyMode) {
+						case LITERAL:
+							fieldName = mapNullKeyLiteral;
+							break;
+						case DROP:
+							continue;
+						case FAIL:
+							throw new RuntimeException(String.format(
+								"JSON format doesn't support to serialize map data with null keys. "
+									+ "You can drop null key entries or encode null in literals by specifying %s option.",
+								JsonOptions.MAP_NULL_KEY_MODE.key()));
+						default:
+							throw new RuntimeException("Unsupported map null key mode. Validator should have checked that.");
+					}
+				} else {
+					fieldName = keyArray.getString(i).toString();
+				}
+
+				Object value = valueGetter.getElementOrNull(valueArray, i);
 				node.set(fieldName, valueConverter.convert(mapper, node.get(fieldName), value));
 			}
 
@@ -259,6 +299,10 @@ public class RowDataToJsonConverters implements Serializable {
 			.map(this::createConverter)
 			.toArray(RowDataToJsonConverter[]::new);
 		final int fieldCount = type.getFieldCount();
+		final RowData.FieldGetter[] fieldGetters = new RowData.FieldGetter[fieldTypes.length];
+		for (int i = 0; i < fieldCount; i++) {
+			fieldGetters[i] = RowData.createFieldGetter(fieldTypes[i], i);
+		}
 
 		return (mapper, reuse, value) -> {
 			ObjectNode node;
@@ -271,7 +315,7 @@ public class RowDataToJsonConverters implements Serializable {
 			RowData row = (RowData) value;
 			for (int i = 0; i < fieldCount; i++) {
 				String fieldName = fieldNames[i];
-				Object field = RowData.get(row, i, fieldTypes[i]);
+				Object field = fieldGetters[i].getFieldOrNull(row);
 				node.set(fieldName, fieldConverters[i].convert(mapper, node.get(fieldName), field));
 			}
 			return node;
@@ -288,4 +332,5 @@ public class RowDataToJsonConverters implements Serializable {
 			return converter.convert(mapper, reuse, object);
 		};
 	}
+
 }

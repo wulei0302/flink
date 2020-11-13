@@ -24,12 +24,14 @@ import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSpecialOperator;
 import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 import org.apache.calcite.util.ImmutableNullableList;
+import org.apache.calcite.util.NlsString;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -122,7 +124,7 @@ public abstract class SqlTableColumn extends SqlCall {
 		@Override
 		protected void unparseColumn(SqlWriter writer, int leftPrec, int rightPrec) {
 			type.unparse(writer, leftPrec, rightPrec);
-			if (!type.getNullable()) {
+			if (this.type.getNullable() != null && !this.type.getNullable()) {
 				// Default is nullable.
 				writer.keyword("NOT NULL");
 			}
@@ -161,8 +163,13 @@ public abstract class SqlTableColumn extends SqlCall {
 			this.isVirtual = isVirtual;
 		}
 
-		public Optional<SqlNode> getMetadataAlias() {
-			return Optional.ofNullable(metadataAlias);
+		public SqlDataTypeSpec getType() {
+			return type;
+		}
+
+		public Optional<String> getMetadataAlias() {
+			return Optional.ofNullable(metadataAlias)
+				.map(alias -> ((NlsString) SqlLiteral.value(alias)).getValue());
 		}
 
 		public boolean isVirtual() {
@@ -172,7 +179,7 @@ public abstract class SqlTableColumn extends SqlCall {
 		@Override
 		protected void unparseColumn(SqlWriter writer, int leftPrec, int rightPrec) {
 			type.unparse(writer, leftPrec, rightPrec);
-			if (!type.getNullable()) {
+			if (this.type.getNullable() != null && !this.type.getNullable()) {
 				// Default is nullable.
 				writer.keyword("NOT NULL");
 			}

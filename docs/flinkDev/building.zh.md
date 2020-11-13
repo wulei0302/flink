@@ -57,6 +57,8 @@ mvn clean install -DskipTests
 mvn clean install -DskipTests -Dfast
 {% endhighlight %}
 
+<a name="build-pyflink"/>
+
 ## 构建 PyFlink
 
 #### 先决条件
@@ -125,7 +127,7 @@ mvn clean install
 
 ## Hadoop 版本
 
-请查看 [Hadoop 集成模块]({{ site.baseurl }}/ops/deployment/hadoop.html) 一节中关于处理 Hadoop 的类和版本问题的方法。
+请查看 [Hadoop 集成模块]({% link ops/deployment/hadoop.zh.md %}) 一节中关于处理 Hadoop 的类和版本问题的方法。
 
 ## Scala 版本
 

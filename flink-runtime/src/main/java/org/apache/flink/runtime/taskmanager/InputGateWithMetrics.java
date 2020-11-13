@@ -19,8 +19,8 @@
 package org.apache.flink.runtime.taskmanager;
 
 import org.apache.flink.metrics.Counter;
-import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
@@ -31,7 +31,6 @@ import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -56,8 +55,8 @@ public class InputGateWithMetrics extends IndexedInputGate {
 	}
 
 	@Override
-	public void resumeConsumption(int channelIndex) throws IOException {
-		inputGate.resumeConsumption(channelIndex);
+	public void resumeConsumption(InputChannelInfo channelInfo) throws IOException {
+		inputGate.resumeConsumption(channelInfo);
 	}
 
 	@Override
@@ -86,8 +85,8 @@ public class InputGateWithMetrics extends IndexedInputGate {
 	}
 
 	@Override
-	public CompletableFuture<?> readRecoveredState(ExecutorService executor, ChannelStateReader reader) throws IOException {
-		return inputGate.readRecoveredState(executor, reader);
+	public CompletableFuture<Void> getStateConsumedFuture() {
+		return inputGate.getStateConsumedFuture();
 	}
 
 	@Override
@@ -123,6 +122,11 @@ public class InputGateWithMetrics extends IndexedInputGate {
 	@Override
 	public CompletableFuture<?> getPriorityEventAvailableFuture() {
 		return inputGate.getPriorityEventAvailableFuture();
+	}
+
+	@Override
+	public void finishReadRecoveredState() throws IOException {
+		inputGate.finishReadRecoveredState();
 	}
 
 	private BufferOrEvent updateMetrics(BufferOrEvent bufferOrEvent) {

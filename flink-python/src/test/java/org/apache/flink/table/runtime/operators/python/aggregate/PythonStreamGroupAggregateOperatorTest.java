@@ -33,8 +33,9 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
-import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.functions.python.PythonAggregateFunctionInfo;
 import org.apache.flink.table.planner.plan.utils.KeySelectorUtil;
+import org.apache.flink.table.planner.typeutils.DataViewUtils;
 import org.apache.flink.table.runtime.operators.python.scalar.PythonScalarFunctionOperatorTestBase;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
@@ -250,12 +251,15 @@ public class PythonStreamGroupAggregateOperatorTest {
 			config,
 			getInputType(),
 			getOutputType(),
-			new PythonFunctionInfo[]{
-				new PythonFunctionInfo(
+			new PythonAggregateFunctionInfo[]{
+				new PythonAggregateFunctionInfo(
 					PythonScalarFunctionOperatorTestBase.DummyPythonFunction.INSTANCE,
-					new Integer[]{0})},
+					new Integer[]{0},
+					-1,
+					false)},
 			getGrouping(),
 			-1,
+			false,
 			false,
 			stateTtl,
 			stateTtl);
@@ -268,9 +272,10 @@ public class PythonStreamGroupAggregateOperatorTest {
 			Configuration config,
 			RowType inputType,
 			RowType outputType,
-			PythonFunctionInfo[] aggregateFunctions,
+			PythonAggregateFunctionInfo[] aggregateFunctions,
 			int[] grouping,
 			int indexOfCountStar,
+			boolean countStarInserted,
 			boolean generateUpdateBefore,
 			long minRetentionTime,
 			long maxRetentionTime) {
@@ -279,8 +284,10 @@ public class PythonStreamGroupAggregateOperatorTest {
 				inputType,
 				outputType,
 				aggregateFunctions,
+				new DataViewUtils.DataViewSpec[0][0],
 				grouping,
 				indexOfCountStar,
+				countStarInserted,
 				generateUpdateBefore,
 				minRetentionTime,
 				maxRetentionTime);
@@ -341,7 +348,7 @@ public class PythonStreamGroupAggregateOperatorTest {
 				1,
 				1,
 				0);
-		testHarness.getStreamConfig().setManagedMemoryFractionOperatorOfUseCase(ManagedMemoryUseCase.BATCH_OP, 0.5);
+		testHarness.getStreamConfig().setManagedMemoryFractionOperatorOfUseCase(ManagedMemoryUseCase.PYTHON, 0.5);
 		testHarness.setup(new RowDataSerializer(outputType));
 		return testHarness;
 	}

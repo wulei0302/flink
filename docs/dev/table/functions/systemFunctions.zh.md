@@ -23,7 +23,7 @@ under the License.
 -->
 
 Flink Table API & SQL provides users with a set of built-in functions for data transformations. This page gives a brief overview of them.
-If a function that you need is not supported yet, you can implement a <a href="udfs.html">user-defined function</a>.
+If a function that you need is not supported yet, you can implement a [user-defined function]({% link dev/table/functions/udfs.zh.md %}).
 If you think that the function is general enough, please <a href="https://issues.apache.org/jira/secure/CreateIssue!default.jspa">open a Jira issue</a> for it with a detailed description.
 
 * This will be replaced by the TOC
@@ -1438,6 +1438,7 @@ UUID()
      </td>
     <td>
       <p>Returns an UUID (Universally Unique Identifier) string (e.g., "3d3c68f7-f608-473f-b60c-b0c44ad4cc4e") according to RFC 4122 type 4 (pseudo randomly generated) UUID. The UUID is generated using a cryptographically strong pseudo random number generator.</p>
+      <p><b>Note:</b> This function is not deterministic which means the value would be recalculated for each record.</p>
     </td>
    </tr>
     
@@ -3771,7 +3772,8 @@ UNIX_TIMESTAMP()
 {% endhighlight %}
       </td>
       <td>
-        <p>Gets current Unix timestamp in seconds. This function is not deterministic.</p>
+        <p>Gets current Unix timestamp in seconds.</p>
+        <p><b>Note:</b> This function is not deterministic which means the value would be recalculated for each record.</p>
         <p>Only supported in blink planner.</p>
       </td>
     </tr>
@@ -3819,7 +3821,8 @@ NOW()
 {% endhighlight %}
       </td>
       <td>
-        <p>Returns the current SQL timestamp in the UTC time zone. This function is not deterministic.</p>
+        <p>Returns the current SQL timestamp in the UTC time zone.</p>
+        <p><b>Note:</b> This function is not deterministic which means the value would be recalculated for each record.</p>
         <p>Only supported in blink planner.</p>
       </td>
     </tr>

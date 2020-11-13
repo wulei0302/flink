@@ -275,7 +275,7 @@ public class WindowWordCount {
                 .socketTextStream("localhost", 9999)
                 .flatMap(new Splitter())
                 .keyBy(value -> value.f0)
-                .timeWindow(Time.seconds(5))
+                .window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
                 .sum(1);
 
         dataStream.print();
@@ -312,7 +312,7 @@ object WindowWordCount {
     val counts = text.flatMap { _.toLowerCase.split("\\W+") filter { _.nonEmpty } }
       .map { (_, 1) }
       .keyBy(_._1)
-      .timeWindow(Time.seconds(5))
+      .window(TumblingProcessingTimeWindows.of(Time.seconds(5)))
       .sum(1)
 
     counts.print()
@@ -535,7 +535,7 @@ at-least-once semantics. The data flushing to the target system depends on the i
 OutputFormat. This means that not all elements send to the OutputFormat are immediately showing up
 in the target system. Also, in failure cases, those records might be lost.
 
-For reliable, exactly-once delivery of a stream into a file system, use the `flink-connector-filesystem`.
+For reliable, exactly-once delivery of a stream into a file system, use the `StreamingFileSink`.
 Also, custom implementations through the `.addSink(...)` method can participate in Flink's checkpointing
 for exactly-once semantics.
 

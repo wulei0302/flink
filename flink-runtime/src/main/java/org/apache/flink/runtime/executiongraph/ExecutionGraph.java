@@ -39,6 +39,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointFailureManager;
 import org.apache.flink.runtime.checkpoint.CheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
+import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.MasterTriggerRestoreHook;
 import org.apache.flink.runtime.checkpoint.OperatorCoordinatorCheckpointContext;
@@ -501,6 +502,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			checkpointStore,
 			checkpointStateBackend,
 			ioExecutor,
+			new CheckpointsCleaner(),
 			new ScheduledExecutorServiceAdapter(checkpointCoordinatorTimer),
 			SharedStateRegistry.DEFAULT_FACTORY,
 			failureManager);
@@ -853,7 +855,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 		}
 
 		// the topology assigning should happen before notifying new vertices to failoverStrategy
-		executionTopology = new DefaultExecutionTopology(this);
+		executionTopology = DefaultExecutionTopology.fromExecutionGraph(this);
 
 		failoverStrategy.notifyNewVertices(newExecJobVertices);
 
@@ -1460,6 +1462,12 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	//  Callbacks and Callback Utilities
 	// --------------------------------------------------------------------------------------------
 
+	@Deprecated
+	@VisibleForTesting
+	public boolean updateState(TaskExecutionState state) {
+		return updateState(new TaskExecutionStateTransition(state));
+	}
+
 	/**
 	 * Updates the state of one of the ExecutionVertex's Execution attempts.
 	 * If the new status if "FINISHED", this also updates the accumulators.
@@ -1467,7 +1475,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	 * @param state The state update.
 	 * @return True, if the task update was properly applied, false, if the execution attempt was not found.
 	 */
-	public boolean updateState(TaskExecutionState state) {
+	public boolean updateState(TaskExecutionStateTransition state) {
 		assertRunningInJobMasterMainThread();
 		final Execution attempt = currentExecutions.get(state.getID());
 
@@ -1490,7 +1498,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 		}
 	}
 
-	private boolean updateStateInternal(final TaskExecutionState state, final Execution attempt) {
+	private boolean updateStateInternal(final TaskExecutionStateTransition state, final Execution attempt) {
 		Map<String, Accumulator<?, ?>> accumulators;
 
 		switch (state.getExecutionState()) {
@@ -1512,7 +1520,13 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			case FAILED:
 				// this deserialization is exception-free
 				accumulators = deserializeAccumulators(state);
-				attempt.markFailed(state.getError(userClassLoader), accumulators, state.getIOMetrics(), !isLegacyScheduling());
+				attempt.markFailed(
+					state.getError(userClassLoader),
+					state.getCancelTask(),
+					accumulators,
+					state.getIOMetrics(),
+					state.getReleasePartitions(),
+					!isLegacyScheduling());
 				return true;
 
 			default:
@@ -1570,7 +1584,7 @@ public class ExecutionGraph implements AccessExecutionGraph {
 	 * @param state The task execution state from which to deserialize the accumulators.
 	 * @return The deserialized accumulators, of null, if there are no accumulators or an error occurred.
 	 */
-	private Map<String, Accumulator<?, ?>> deserializeAccumulators(TaskExecutionState state) {
+	private Map<String, Accumulator<?, ?>> deserializeAccumulators(TaskExecutionStateTransition state) {
 		AccumulatorSnapshot serializedAccumulators = state.getAccumulators();
 
 		if (serializedAccumulators != null) {
@@ -1683,11 +1697,11 @@ public class ExecutionGraph implements AccessExecutionGraph {
 			final ExecutionState newExecutionState,
 			final Throwable error) {
 
+		executionStateUpdateListener.onStateUpdate(execution.getAttemptId(), newExecutionState);
+
 		if (!isLegacyScheduling()) {
 			return;
 		}
-
-		executionStateUpdateListener.onStateUpdate(execution.getAttemptId(), newExecutionState);
 
 		// see what this means for us. currently, the first FAILED state means -> FAILED
 		if (newExecutionState == ExecutionState.FAILED) {
@@ -1719,9 +1733,13 @@ public class ExecutionGraph implements AccessExecutionGraph {
 		}
 	}
 
-	void notifySchedulerNgAboutInternalTaskFailure(final ExecutionAttemptID attemptId, final Throwable t) {
+	void notifySchedulerNgAboutInternalTaskFailure(
+			final ExecutionAttemptID attemptId,
+			final Throwable t,
+			final boolean cancelTask,
+			final boolean releasePartitions) {
 		if (internalTaskFailuresListener != null) {
-			internalTaskFailuresListener.notifyTaskFailure(attemptId, t);
+			internalTaskFailuresListener.notifyTaskFailure(attemptId, t, cancelTask, releasePartitions);
 		}
 	}
 

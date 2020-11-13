@@ -24,21 +24,22 @@ import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.core.AggregateCall
 import org.apache.flink.api.dag.Transformation
 import org.apache.flink.configuration.Configuration
+import org.apache.flink.core.memory.ManagedMemoryUseCase
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator
 import org.apache.flink.streaming.api.transformations.OneInputTransformation
 import org.apache.flink.table.data.RowData
-import org.apache.flink.table.functions.python.PythonFunctionInfo
+import org.apache.flink.table.functions.python.{PythonAggregateFunctionInfo, PythonFunctionInfo}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.delegation.StreamPlanner
 import org.apache.flink.table.planner.plan.nodes.common.CommonPythonAggregate
 import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, StreamExecNode}
 import org.apache.flink.table.planner.plan.utils._
+import org.apache.flink.table.planner.typeutils.DataViewUtils.DataViewSpec
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.RowType
 
 import scala.collection.JavaConversions._
 import java.util
-
-import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 
 /**
   * Stream physical RelNode for Python unbounded group aggregate.
@@ -120,16 +121,27 @@ class StreamExecPythonGroupAggregate(
 
     val inputCountIndex = aggInfoList.getIndexOfCountStar
 
+    val countStarInserted = aggInfoList.countStarInserted
+
+    var (pythonFunctionInfos, dataViewSpecs) =
+      extractPythonAggregateFunctionInfos(aggInfoList, aggCalls)
+
+    if (dataViewSpecs.forall(_.isEmpty)) {
+      dataViewSpecs = Array()
+    }
+
     val operator = getPythonAggregateFunctionOperator(
       getConfig(planner.getExecEnv, tableConfig),
       inputRowType,
       outRowType,
-      aggInfoList.aggInfos.map(extractPythonAggregateFunctionInfosFromAggregateInfo),
+      pythonFunctionInfos,
+      dataViewSpecs,
       tableConfig.getMinIdleStateRetentionTime,
       tableConfig.getMaxIdleStateRetentionTime,
       grouping,
       generateUpdateBefore,
-      inputCountIndex)
+      inputCountIndex,
+      countStarInserted)
 
     val selector = KeySelectorUtil.getRowDataSelector(
       grouping,
@@ -148,6 +160,10 @@ class StreamExecPythonGroupAggregate(
       ret.setMaxParallelism(1)
     }
 
+    if (isPythonWorkerUsingManagedMemory(planner.getTableConfig.getConfiguration)) {
+      ret.declareManagedMemoryUseCaseAtSlotScope(ManagedMemoryUseCase.PYTHON)
+    }
+
     // set KeyType and Selector for state
     ret.setStateKeySelector(selector)
     ret.setStateKeyType(selector.getProducedType)
@@ -158,21 +174,25 @@ class StreamExecPythonGroupAggregate(
       config: Configuration,
       inputType: RowType,
       outputType: RowType,
-      aggregateFunctions: Array[PythonFunctionInfo],
+      aggregateFunctions: Array[PythonAggregateFunctionInfo],
+      dataViewSpecs: Array[Array[DataViewSpec]],
       minIdleStateRetentionTime: Long,
       maxIdleStateRetentionTime: Long,
       grouping: Array[Int],
       generateUpdateBefore: Boolean,
-      indexOfCountStar: Int): OneInputStreamOperator[RowData, RowData] = {
+      indexOfCountStar: Int,
+      countStarInserted: Boolean): OneInputStreamOperator[RowData, RowData] = {
 
     val clazz = loadClass(StreamExecPythonGroupAggregate.PYTHON_STREAM_AGGREAGTE_OPERATOR_NAME)
     val ctor = clazz.getConstructor(
       classOf[Configuration],
       classOf[RowType],
       classOf[RowType],
-      classOf[Array[PythonFunctionInfo]],
+      classOf[Array[PythonAggregateFunctionInfo]],
+      classOf[Array[Array[DataViewSpec]]],
       classOf[Array[Int]],
       classOf[Int],
+      classOf[Boolean],
       classOf[Boolean],
       classOf[Long],
       classOf[Long])
@@ -181,8 +201,10 @@ class StreamExecPythonGroupAggregate(
       inputType.asInstanceOf[AnyRef],
       outputType.asInstanceOf[AnyRef],
       aggregateFunctions.asInstanceOf[AnyRef],
+      dataViewSpecs.asInstanceOf[AnyRef],
       grouping.asInstanceOf[AnyRef],
       indexOfCountStar.asInstanceOf[AnyRef],
+      countStarInserted.asInstanceOf[AnyRef],
       generateUpdateBefore.asInstanceOf[AnyRef],
       minIdleStateRetentionTime.asInstanceOf[AnyRef],
       maxIdleStateRetentionTime.asInstanceOf[AnyRef])

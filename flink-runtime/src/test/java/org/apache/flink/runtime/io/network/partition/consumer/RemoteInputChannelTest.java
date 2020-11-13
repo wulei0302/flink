@@ -31,6 +31,7 @@ import org.apache.flink.runtime.io.network.TestingConnectionManager;
 import org.apache.flink.runtime.io.network.TestingPartitionRequestClient;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.runtime.io.network.buffer.Buffer.DataType;
 import org.apache.flink.runtime.io.network.buffer.BufferListener.NotificationResult;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
@@ -39,6 +40,7 @@ import org.apache.flink.runtime.io.network.partition.PartitionNotFoundException;
 import org.apache.flink.runtime.io.network.partition.PartitionProducerStateProvider;
 import org.apache.flink.runtime.io.network.partition.ProducerFailedException;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannel.BufferAndAvailability;
 import org.apache.flink.runtime.io.network.util.TestBufferFactory;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
@@ -373,7 +375,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = spy(networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers));
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			// Prepare the exclusive and floating buffers to verify recycle logic later
@@ -512,7 +514,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = spy(networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers));
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			// Prepare the exclusive and floating buffers to verify recycle logic later
@@ -587,7 +589,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = spy(networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers));
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			// Prepare the exclusive and floating buffers to verify recycle logic later
@@ -680,7 +682,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = spy(networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers));
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputGate.requestPartitions();
 			for (RemoteInputChannel inputChannel : inputChannels) {
 				inputChannel.requestSubpartition(0);
@@ -799,7 +801,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers);
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			final Callable<Void> requestBufferTask = new Callable<Void>() {
@@ -862,7 +864,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers);
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			final Callable<Void> requestBufferTask = new Callable<Void>() {
@@ -913,7 +915,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers);
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			final Callable<Void> releaseTask = new Callable<Void>() {
@@ -966,7 +968,7 @@ public class RemoteInputChannelTest {
 		try {
 			final BufferPool bufferPool = networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers);
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			final Callable<Void> bufferPoolInteractionsTask = () -> {
@@ -1038,7 +1040,7 @@ public class RemoteInputChannelTest {
 		try {
 			BufferPool bufferPool = networkBufferPool.createBufferPool(numFloatingBuffers, numFloatingBuffers);
 			inputGate.setBufferPool(bufferPool);
-			inputGate.assignExclusiveSegments();
+			inputGate.setupChannels();
 			inputChannel.requestSubpartition(0);
 
 			for (int i = 0; i < numTotalBuffers; i++) {
@@ -1126,7 +1128,7 @@ public class RemoteInputChannelTest {
 		final NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, 4096);
 		SingleInputGate inputGate = new SingleInputGateBuilder()
 			.setChannelFactory(InputChannelBuilder::buildRemoteChannel)
-			.setBufferPoolFactory(networkBufferPool.createBufferPool(0, 4))
+			.setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
 			.setSegmentProvider(networkBufferPool)
 			.build();
 		final RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
@@ -1145,6 +1147,48 @@ public class RemoteInputChannelTest {
 		assertEquals(3, channel.getNextBuffer().get().getSequenceNumber());
 	}
 
+	@Test
+	public void testRequiresAnnouncement() throws Exception {
+		final NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, 4096);
+		SingleInputGate inputGate = new SingleInputGateBuilder()
+				.setChannelFactory(InputChannelBuilder::buildRemoteChannel)
+				.setBufferPoolFactory(networkBufferPool.createBufferPool(1, 4))
+				.setSegmentProvider(networkBufferPool)
+				.build();
+		final RemoteInputChannel channel = (RemoteInputChannel) inputGate.getChannel(0);
+		inputGate.setup();
+		inputGate.requestPartitions();
+
+		final long timeout = 10;
+		CheckpointOptions options = CheckpointOptions.create(
+				CHECKPOINT,
+				CheckpointStorageLocationReference.getDefault(),
+				true,
+				true,
+				timeout);
+
+		assertTrue(options.needsAlignment());
+		assertTrue(options.isTimeoutable());
+		assertFalse(options.isUnalignedCheckpoint());
+		Buffer checkpointBarrierBuffer = toBuffer(new CheckpointBarrier(1L, 123L, options), false);
+		assertEquals(DataType.TIMEOUTABLE_ALIGNED_CHECKPOINT_BARRIER, checkpointBarrierBuffer.getDataType());
+
+		channel.onBuffer(createBuffer(1), 0, 0);
+		channel.onBuffer(createBuffer(1), 1, 0);
+		channel.onBuffer(checkpointBarrierBuffer, 2, 0);
+		channel.onBuffer(createBuffer(1), 3, 0);
+
+		BufferAndAvailability nextBuffer = channel.getNextBuffer().get();
+		assertEquals(2, nextBuffer.getSequenceNumber());
+		assertFalse(nextBuffer.morePriorityEvents());
+		assertTrue(nextBuffer.moreAvailable());
+		assertEquals(DataType.PRIORITIZED_EVENT_BUFFER, nextBuffer.buffer().getDataType());
+
+		assertEquals(0, channel.getNextBuffer().get().getSequenceNumber());
+		assertEquals(1, channel.getNextBuffer().get().getSequenceNumber());
+		assertEquals(2, channel.getNextBuffer().get().getSequenceNumber());
+		assertEquals(3, channel.getNextBuffer().get().getSequenceNumber());
+	}
 	// ---------------------------------------------------------------------------------------------
 
 	private RemoteInputChannel createRemoteInputChannel(SingleInputGate inputGate) {

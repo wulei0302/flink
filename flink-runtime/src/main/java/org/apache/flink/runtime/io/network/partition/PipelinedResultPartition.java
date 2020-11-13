@@ -18,12 +18,10 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
-import org.apache.flink.runtime.checkpoint.channel.ChannelStateReader;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
-import org.apache.flink.runtime.io.network.buffer.BufferPoolOwner;
-import org.apache.flink.util.function.FunctionWithException;
+import org.apache.flink.util.function.SupplierWithException;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
@@ -73,7 +71,7 @@ public class PipelinedResultPartition extends BufferWritingResultPartition
 			int numTargetKeyGroups,
 			ResultPartitionManager partitionManager,
 			@Nullable BufferCompressor bufferCompressor,
-			FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory) {
+			SupplierWithException<BufferPool, IOException> bufferPoolFactory) {
 
 		super(
 			owningTaskName,
@@ -138,15 +136,6 @@ public class PipelinedResultPartition extends BufferWritingResultPartition
 	}
 
 	@Override
-	public void readRecoveredState(ChannelStateReader stateReader) throws IOException, InterruptedException {
-		for (ResultSubpartition subPar : subpartitions) {
-			((PipelinedSubpartition) subPar).readRecoveredState(stateReader);
-		}
-
-		LOG.debug("{}: Finished reading recovered state.", this);
-	}
-
-	@Override
 	public void flushAll() {
 		flushAllSubpartitions(false);
 	}
@@ -169,7 +158,15 @@ public class PipelinedResultPartition extends BufferWritingResultPartition
 	// ------------------------------------------------------------------------
 
 	private static ResultPartitionType checkResultPartitionType(ResultPartitionType type) {
-		checkArgument(type == ResultPartitionType.PIPELINED || type == ResultPartitionType.PIPELINED_BOUNDED);
+		checkArgument(type == ResultPartitionType.PIPELINED || type == ResultPartitionType.PIPELINED_BOUNDED ||
+			type == ResultPartitionType.PIPELINED_APPROXIMATE);
 		return type;
+	}
+
+	@Override
+	public void finishReadRecoveredState(boolean notifyAndBlockOnCompletion) throws IOException {
+		for (ResultSubpartition subpartition : subpartitions) {
+			((CheckpointedResultSubpartition) subpartition).finishReadRecoveredState(notifyAndBlockOnCompletion);
+		}
 	}
 }

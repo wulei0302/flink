@@ -71,9 +71,10 @@ import static org.junit.Assert.assertNull;
 @RunWith(Parameterized.class)
 public class PipelinedSubpartitionWithReadViewTest {
 
-	private PipelinedSubpartition subpartition;
-	private AwaitableBufferAvailablityListener availablityListener;
-	private PipelinedSubpartitionView readView;
+	ResultPartition resultPartition;
+	PipelinedSubpartition subpartition;
+	AwaitableBufferAvailablityListener availablityListener;
+	PipelinedSubpartitionView readView;
 
 	@Parameterized.Parameter
 	public boolean compressionEnabled;
@@ -84,13 +85,9 @@ public class PipelinedSubpartitionWithReadViewTest {
 	}
 
 	@Before
-	public void setup() throws IOException {
-		final ResultPartition parent = PartitionTestUtils.createPartition(
-			ResultPartitionType.PIPELINED,
-			NoOpFileChannelManager.INSTANCE,
-			compressionEnabled,
-			BUFFER_SIZE);
-		subpartition = new PipelinedSubpartition(0, parent);
+	public void before() throws IOException {
+		setup(ResultPartitionType.PIPELINED);
+		subpartition = new PipelinedSubpartition(0, resultPartition);
 		availablityListener = new AwaitableBufferAvailablityListener();
 		readView = subpartition.createReadView(availablityListener);
 	}
@@ -106,6 +103,13 @@ public class PipelinedSubpartitionWithReadViewTest {
 		subpartition.add(createBufferBuilder().createBufferConsumer());
 		subpartition.add(createBufferBuilder().createBufferConsumer());
 		assertNull(readView.getNextBuffer());
+	}
+
+	@Test
+	public void testRelease() {
+		readView.releaseAllResources();
+		assertFalse(
+			resultPartition.getPartitionManager().getUnreleasedPartitions().contains(resultPartition.getPartitionId()));
 	}
 
 	@Test
@@ -338,7 +342,8 @@ public class PipelinedSubpartitionWithReadViewTest {
 			CheckpointType.CHECKPOINT,
 			new CheckpointStorageLocationReference(new byte[]{0, 1, 2}),
 			true,
-			true);
+			true,
+			0);
 		channelStateWriter.start(0, options);
 		BufferConsumer barrierBuffer = EventSerializer.toBufferConsumer(new CheckpointBarrier(0, 0, options), true);
 		subpartition.add(barrierBuffer);
@@ -365,7 +370,8 @@ public class PipelinedSubpartitionWithReadViewTest {
 			CheckpointType.CHECKPOINT,
 			new CheckpointStorageLocationReference(new byte[]{0, 1, 2}),
 			true,
-			true);
+			true,
+			0);
 		BufferConsumer barrierBuffer = EventSerializer.toBufferConsumer(new CheckpointBarrier(0, 0, options), true);
 		subpartition.add(barrierBuffer);
 		assertEquals(1, availablityListener.getNumNotifications());
@@ -477,7 +483,7 @@ public class PipelinedSubpartitionWithReadViewTest {
 	// ------------------------------------------------------------------------
 
 	private void blockSubpartitionByCheckpoint(int numNotifications) throws IOException, InterruptedException {
-		subpartition.add(createEventBufferConsumer(BUFFER_SIZE, Buffer.DataType.ALIGNED_EXACTLY_ONCE_CHECKPOINT_BARRIER));
+		subpartition.add(createEventBufferConsumer(BUFFER_SIZE, Buffer.DataType.ALIGNED_CHECKPOINT_BARRIER));
 
 		assertEquals(numNotifications, availablityListener.getNumNotifications());
 		assertNextEvent(readView, BUFFER_SIZE, null, false, 0, false, true);
@@ -573,5 +579,14 @@ public class PipelinedSubpartitionWithReadViewTest {
 
 	static void assertNoNextBuffer(ResultSubpartitionView readView) throws IOException, InterruptedException {
 		assertNull(readView.getNextBuffer());
+	}
+
+	void setup(ResultPartitionType resultPartitionType) throws IOException {
+		resultPartition = PartitionTestUtils.createPartition(
+			resultPartitionType,
+			NoOpFileChannelManager.INSTANCE,
+			compressionEnabled,
+			BUFFER_SIZE);
+		resultPartition.setup();
 	}
 }

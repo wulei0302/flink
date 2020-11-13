@@ -23,8 +23,6 @@ import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -45,14 +43,6 @@ public abstract class ResultSubpartition {
 	public ResultSubpartition(int index, ResultPartition parent) {
 		this.parent = parent;
 		this.subpartitionInfo = new ResultSubpartitionInfo(parent.getPartitionIndex(), index);
-	}
-
-	/**
-	 * Whether the buffer can be compressed or not. Note that event is not compressed because it
-	 * is usually small and the size can become even larger after compression.
-	 */
-	protected boolean canBeCompressed(Buffer buffer) {
-		return parent.bufferCompressor != null && buffer.isBuffer() && buffer.readableBytes() > 0;
 	}
 
 	public ResultSubpartitionInfo getSubpartitionInfo() {
@@ -77,6 +67,11 @@ public abstract class ResultSubpartition {
 		parent.onConsumedSubpartition(getSubPartitionIndex());
 	}
 
+	@VisibleForTesting
+	public final boolean add(BufferConsumer bufferConsumer) throws IOException {
+		return add(bufferConsumer, 0);
+	}
+
 	/**
 	 * Adds the given buffer.
 	 *
@@ -89,11 +84,14 @@ public abstract class ResultSubpartition {
 	 *
 	 * @param bufferConsumer
 	 * 		the buffer to add (transferring ownership to this writer)
+	 * @param partialRecordLength
+	 * 		the length of bytes to skip in order to start with a complete record, from position index 0
+	 *		of the underlying {@cite MemorySegment}.
 	 * @return true if operation succeeded and bufferConsumer was enqueued for consumption.
 	 * @throws IOException
 	 * 		thrown in case of errors while adding the buffer
 	 */
-	public abstract boolean add(BufferConsumer bufferConsumer) throws IOException;
+	public abstract boolean add(BufferConsumer bufferConsumer, int partialRecordLength) throws IOException;
 
 	public abstract void flush();
 
@@ -166,13 +164,13 @@ public abstract class ResultSubpartition {
 
 		public static BufferAndBacklog fromBufferAndLookahead(
 				Buffer current,
-				@Nullable Buffer lookahead,
+				Buffer.DataType nextDataType,
 				int backlog,
 				int sequenceNumber) {
 			return new BufferAndBacklog(
 				current,
 				backlog,
-				lookahead != null ? lookahead.getDataType() : Buffer.DataType.NONE,
+				nextDataType,
 				sequenceNumber);
 		}
 	}

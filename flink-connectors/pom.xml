@@ -38,7 +38,6 @@ under the License.
 	<modules>
 		<module>flink-hadoop-compatibility</module>
 		<module>flink-hcatalog</module>
-		<module>flink-connector-kafka-base</module>
 		<module>flink-connector-elasticsearch-base</module>
 		<module>flink-connector-elasticsearch5</module>
 		<module>flink-connector-elasticsearch6</module>
@@ -52,11 +51,11 @@ under the License.
 		<module>flink-connector-twitter</module>
 		<module>flink-connector-nifi</module>
 		<module>flink-connector-cassandra</module>
-		<module>flink-connector-filesystem</module>
 		<module>flink-connector-kafka</module>
 		<module>flink-connector-gcp-pubsub</module>
 		<module>flink-connector-kinesis</module>
 		<module>flink-connector-base</module>
+		<module>flink-file-sink-common</module>
 		<module>flink-connector-files</module>
 	</modules>
 

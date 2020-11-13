@@ -173,10 +173,11 @@ public class OperationConverterUtils {
 		SqlRegularColumn regularColumn = (SqlRegularColumn) tableColumn;
 		String name = regularColumn.getName().getSimple();
 		SqlDataTypeSpec typeSpec = regularColumn.getType();
+		boolean nullable = typeSpec.getNullable() == null ? true : typeSpec.getNullable();
 		LogicalType logicalType = FlinkTypeFactory.toLogicalType(
-				typeSpec.deriveType(sqlValidator, typeSpec.getNullable()));
+				typeSpec.deriveType(sqlValidator, nullable));
 		DataType dataType = TypeConversions.fromLogicalToDataType(logicalType);
-		return TableColumn.of(name, dataType);
+		return TableColumn.physical(name, dataType);
 	}
 
 	private static void setWatermarkAndPK(TableSchema.Builder builder, TableSchema schema) {

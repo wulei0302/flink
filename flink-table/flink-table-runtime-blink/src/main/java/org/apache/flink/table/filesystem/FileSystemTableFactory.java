@@ -18,28 +18,27 @@
 
 package org.apache.flink.table.filesystem;
 
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.Path;
+import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.connector.format.DecodingFormat;
+import org.apache.flink.table.connector.format.EncodingFormat;
+import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.factories.BulkReaderFormatFactory;
+import org.apache.flink.table.factories.BulkWriterFormatFactory;
+import org.apache.flink.table.factories.DecodingFormatFactory;
+import org.apache.flink.table.factories.DeserializationFormatFactory;
+import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
+import org.apache.flink.table.factories.EncodingFormatFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.FileSystemFormatFactory;
+import org.apache.flink.table.factories.SerializationFormatFactory;
 import org.apache.flink.table.factories.TableFactory;
-import org.apache.flink.table.factories.TableSinkFactory;
-import org.apache.flink.table.factories.TableSourceFactory;
-import org.apache.flink.table.sinks.TableSink;
-import org.apache.flink.table.sources.TableSource;
-import org.apache.flink.table.utils.TableSchemaUtils;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import static org.apache.flink.table.descriptors.ConnectorDescriptorValidator.CONNECTOR;
-import static org.apache.flink.table.descriptors.FormatDescriptorValidator.FORMAT;
-import static org.apache.flink.table.filesystem.FileSystemOptions.PARTITION_DEFAULT_NAME;
-import static org.apache.flink.table.filesystem.FileSystemOptions.PATH;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * File system {@link TableFactory}.
@@ -48,71 +47,109 @@ import static org.apache.flink.table.filesystem.FileSystemOptions.PATH;
  * table or a catalog table.
  * 2.Support insert into (append) and insert overwrite.
  * 3.Support static and dynamic partition inserting.
- *
- * <p>Migrate to new source/sink interface after FLIP-95 is ready.
  */
 public class FileSystemTableFactory implements
-		TableSourceFactory<RowData>,
-		TableSinkFactory<RowData> {
+		DynamicTableSourceFactory,
+		DynamicTableSinkFactory {
 
 	public static final String IDENTIFIER = "filesystem";
 
 	@Override
-	public Map<String, String> requiredContext() {
-		Map<String, String> context = new HashMap<>();
-		context.put(CONNECTOR, IDENTIFIER);
-		return context;
+	public String factoryIdentifier() {
+		return IDENTIFIER;
 	}
 
 	@Override
-	public List<String> supportedProperties() {
-		// contains format properties.
-		return Collections.singletonList("*");
-	}
-
-	@Override
-	public TableSource<RowData> createTableSource(TableSourceFactory.Context context) {
-		Configuration conf = new Configuration();
-		context.getTable().getOptions().forEach(conf::setString);
-
+	public DynamicTableSource createDynamicTableSource(Context context) {
+		FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+		validate(helper);
 		return new FileSystemTableSource(
-				TableSchemaUtils.getPhysicalSchema(context.getTable().getSchema()),
-				getPath(conf),
-				context.getTable().getPartitionKeys(),
-				conf.get(PARTITION_DEFAULT_NAME),
-				context.getTable().getProperties());
+				context,
+				discoverOptionalDecodingFormat(helper, BulkReaderFormatFactory.class).orElse(null),
+				discoverOptionalDecodingFormat(helper, DeserializationFormatFactory.class).orElse(null),
+				discoverOptionalFormatFactory(helper).orElse(null));
 	}
 
 	@Override
-	public TableSink<RowData> createTableSink(TableSinkFactory.Context context) {
-		Configuration conf = new Configuration();
-		context.getTable().getOptions().forEach(conf::setString);
-
+	public DynamicTableSink createDynamicTableSink(Context context) {
+		FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+		validate(helper);
 		return new FileSystemTableSink(
-				context.getObjectIdentifier(),
-				context.isBounded(),
-				TableSchemaUtils.getPhysicalSchema(context.getTable().getSchema()),
-				getPath(conf),
-				context.getTable().getPartitionKeys(),
-				conf.get(PARTITION_DEFAULT_NAME),
-				context.getTable().getOptions());
+				context,
+				discoverOptionalDecodingFormat(helper, BulkReaderFormatFactory.class).orElse(null),
+				discoverOptionalDecodingFormat(helper, DeserializationFormatFactory.class).orElse(null),
+				discoverOptionalFormatFactory(helper).orElse(null),
+				discoverOptionalEncodingFormat(helper, BulkWriterFormatFactory.class).orElse(null),
+				discoverOptionalEncodingFormat(helper, SerializationFormatFactory.class).orElse(null));
 	}
 
-	private static Path getPath(Configuration conf) {
-		return new Path(conf.getOptional(PATH).orElseThrow(() ->
-				new ValidationException("Path should be not empty.")));
+	@Override
+	public Set<ConfigOption<?>> requiredOptions() {
+		Set<ConfigOption<?>> options = new HashSet<>();
+		options.add(FileSystemOptions.PATH);
+		options.add(FactoryUtil.FORMAT);
+		return options;
 	}
 
-	public static FileSystemFormatFactory createFormatFactory(Map<String, String> properties) {
-		String format = properties.get(FORMAT);
+	@Override
+	public Set<ConfigOption<?>> optionalOptions() {
+		Set<ConfigOption<?>> options = new HashSet<>();
+		options.add(FileSystemOptions.PARTITION_DEFAULT_NAME);
+		options.add(FileSystemOptions.SINK_ROLLING_POLICY_FILE_SIZE);
+		options.add(FileSystemOptions.SINK_ROLLING_POLICY_ROLLOVER_INTERVAL);
+		options.add(FileSystemOptions.SINK_ROLLING_POLICY_CHECK_INTERVAL);
+		options.add(FileSystemOptions.SINK_SHUFFLE_BY_PARTITION);
+		options.add(FileSystemOptions.PARTITION_TIME_EXTRACTOR_KIND);
+		options.add(FileSystemOptions.PARTITION_TIME_EXTRACTOR_CLASS);
+		options.add(FileSystemOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN);
+		options.add(FileSystemOptions.SINK_PARTITION_COMMIT_TRIGGER);
+		options.add(FileSystemOptions.SINK_PARTITION_COMMIT_DELAY);
+		options.add(FileSystemOptions.SINK_PARTITION_COMMIT_POLICY_KIND);
+		options.add(FileSystemOptions.SINK_PARTITION_COMMIT_POLICY_CLASS);
+		options.add(FileSystemOptions.SINK_PARTITION_COMMIT_SUCCESS_FILE_NAME);
+		options.add(FileSystemOptions.AUTO_COMPACTION);
+		options.add(FileSystemOptions.COMPACTION_FILE_SIZE);
+		return options;
+	}
+
+	private void validate(FactoryUtil.TableFactoryHelper helper) {
+		// Except format options, some formats like parquet and orc can not list all supported options.
+		helper.validateExcept(helper.getOptions().get(FactoryUtil.FORMAT) + ".");
+	}
+
+	private <I, F extends DecodingFormatFactory<I>> Optional<DecodingFormat<I>> discoverOptionalDecodingFormat(
+			FactoryUtil.TableFactoryHelper helper, Class<F> formatFactoryClass) {
+		try {
+			return Optional.of(helper.discoverDecodingFormat(formatFactoryClass, FactoryUtil.FORMAT));
+		} catch (ValidationException ignore) {
+			return Optional.empty();
+		}
+	}
+
+	private <I, F extends EncodingFormatFactory<I>> Optional<EncodingFormat<I>> discoverOptionalEncodingFormat(
+			FactoryUtil.TableFactoryHelper helper, Class<F> formatFactoryClass) {
+		try {
+			return Optional.of(helper.discoverEncodingFormat(formatFactoryClass, FactoryUtil.FORMAT));
+		} catch (ValidationException ignore) {
+			return Optional.empty();
+		}
+	}
+
+	private Optional<FileSystemFormatFactory> discoverOptionalFormatFactory(
+			FactoryUtil.TableFactoryHelper helper) {
+		String format = helper.getOptions().get(FactoryUtil.FORMAT);
 		if (format == null) {
 			throw new ValidationException(String.format(
 					"Table options do not contain an option key '%s' for discovering a format.",
-					FORMAT));
+					FactoryUtil.FORMAT.key()));
 		}
-		return FactoryUtil.discoverFactory(
-				Thread.currentThread().getContextClassLoader(),
-				FileSystemFormatFactory.class,
-				format);
+		try {
+			return Optional.of(FactoryUtil.discoverFactory(
+					Thread.currentThread().getContextClassLoader(),
+					FileSystemFormatFactory.class,
+					format));
+		} catch (ValidationException e) {
+			return Optional.empty();
+		}
 	}
 }

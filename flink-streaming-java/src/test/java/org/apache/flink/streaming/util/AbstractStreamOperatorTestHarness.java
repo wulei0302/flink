@@ -24,6 +24,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.OperatorStateRepartitioner;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
@@ -36,7 +37,7 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockEnvironmentBuilder;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
-import org.apache.flink.runtime.state.CheckpointStorage;
+import org.apache.flink.runtime.state.CheckpointStorageAccess;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.KeyGroupRange;
@@ -128,7 +129,7 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 	// use this as default for tests
 	protected StateBackend stateBackend = new MemoryStateBackend();
 
-	private CheckpointStorage checkpointStorage = stateBackend.createCheckpointStorage(new JobID());
+	private CheckpointStorageAccess checkpointStorageAccess = stateBackend.createCheckpointStorage(new JobID());
 
 	private final Object checkpointLock;
 
@@ -136,6 +137,25 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 			RoundRobinOperatorStateRepartitioner.INSTANCE;
 
 	private InternalTimeServiceManagerImpl<?> timeServiceManager;
+	private InternalTimeServiceManager.Provider timeServiceManagerProvider = new InternalTimeServiceManager.Provider() {
+		@Override
+		public <K> InternalTimeServiceManager<K> create(
+				CheckpointableKeyedStateBackend<K> keyedStatedBackend,
+				ClassLoader userClassloader,
+				KeyContext keyContext,
+				ProcessingTimeService processingTimeService,
+				Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates) throws Exception {
+			InternalTimeServiceManagerImpl<K> typedTimeServiceManager = InternalTimeServiceManagerImpl.create(
+				keyedStatedBackend,
+				userClassloader,
+				keyContext,
+				processingTimeService,
+				rawKeyedStates
+			);
+			timeServiceManager = typedTimeServiceManager;
+			return typedTimeServiceManager;
+		}
+	};
 
 	/**
 	 * Whether setup() was called on the operator. This is reset when calling close().
@@ -242,6 +262,8 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 		this.config = new StreamConfig(underlyingConfig);
 		this.config.setCheckpointingEnabled(true);
 		this.config.setOperatorID(operatorID);
+		this.config.setStateBackendUsesManagedMemory(true);
+		this.config.setManagedMemoryFractionOperatorOfUseCase(ManagedMemoryUseCase.STATE_BACKEND, 1.0);
 		this.executionConfig = env.getExecutionConfig();
 		this.checkpointLock = new Object();
 
@@ -256,7 +278,11 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 		ttlTimeProvider = new MockTtlTimeProvider();
 		ttlTimeProvider.setCurrentTimestamp(0);
 
-		this.streamTaskStateInitializer = createStreamTaskStateManager(environment, stateBackend, ttlTimeProvider);
+		this.streamTaskStateInitializer = createStreamTaskStateManager(
+			environment,
+			stateBackend,
+			ttlTimeProvider,
+			timeServiceManagerProvider);
 
 		BiConsumer<String, Throwable> handleAsyncException = (message, t) -> {
 			wasFailedExternally = true;
@@ -269,47 +295,31 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 			.setConfig(config)
 			.setExecutionConfig(executionConfig)
 			.setStreamTaskStateInitializer(streamTaskStateInitializer)
-			.setCheckpointStorage(checkpointStorage)
+			.setCheckpointStorage(checkpointStorageAccess)
 			.setTimerService(processingTimeService)
 			.setHandleAsyncException(handleAsyncException)
 			.setTaskMailbox(taskMailbox)
 			.build();
 	}
 
-	protected StreamTaskStateInitializer createStreamTaskStateManager(
+	private StreamTaskStateInitializer createStreamTaskStateManager(
 		Environment env,
 		StateBackend stateBackend,
-		TtlTimeProvider ttlTimeProvider) {
+		TtlTimeProvider ttlTimeProvider,
+		InternalTimeServiceManager.Provider timeServiceManagerProvider) {
 		return new StreamTaskStateInitializerImpl(
 			env,
 			stateBackend,
 			ttlTimeProvider,
-			new InternalTimeServiceManager.Provider() {
-				@Override
-				public <K> InternalTimeServiceManager<K> create(
-						CheckpointableKeyedStateBackend<K> keyedStatedBackend,
-						ClassLoader userClassloader,
-						KeyContext keyContext,
-						ProcessingTimeService processingTimeService,
-						Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates) throws Exception {
-					InternalTimeServiceManagerImpl<K> typedTimeServiceManager = InternalTimeServiceManagerImpl.create(
-						keyedStatedBackend,
-						userClassloader,
-						keyContext,
-						processingTimeService,
-						rawKeyedStates
-					);
-					timeServiceManager = typedTimeServiceManager;
-					return typedTimeServiceManager;
-				}
-			});
+			timeServiceManagerProvider
+		);
 	}
 
 	public void setStateBackend(StateBackend stateBackend) {
 		this.stateBackend = stateBackend;
 
 		try {
-			this.checkpointStorage = stateBackend.createCheckpointStorage(new JobID());
+			this.checkpointStorageAccess = stateBackend.createCheckpointStorage(new JobID());
 		} catch (IOException e) {
 			throw new RuntimeException(e.getMessage(), e);
 		}
@@ -386,7 +396,7 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 	public void setup(TypeSerializer<OUT> outputSerializer) {
 		if (!setupCalled) {
 			streamTaskStateInitializer =
-				createStreamTaskStateManager(environment, stateBackend, ttlTimeProvider);
+				createStreamTaskStateManager(environment, stateBackend, ttlTimeProvider, timeServiceManagerProvider);
 			mockTask.setStreamTaskStateInitializer(streamTaskStateInitializer);
 
 			if (operator == null) {
@@ -486,11 +496,12 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 			localRawOperatorState = Collections.emptyList();
 		}
 
-		return new OperatorSubtaskState(
-			new StateObjectCollection<>(nullToEmptyCollection(localManagedOperatorState)),
-			new StateObjectCollection<>(nullToEmptyCollection(localRawOperatorState)),
-			new StateObjectCollection<>(nullToEmptyCollection(localManagedKeyGroupState)),
-			new StateObjectCollection<>(nullToEmptyCollection(localRawKeyGroupState)));
+		return OperatorSubtaskState.builder()
+			.setManagedOperatorState(new StateObjectCollection<>(nullToEmptyCollection(localManagedOperatorState)))
+			.setRawOperatorState(new StateObjectCollection<>(nullToEmptyCollection(localRawOperatorState)))
+			.setManagedKeyedState(new StateObjectCollection<>(nullToEmptyCollection(localManagedKeyGroupState)))
+			.setRawKeyedState(new StateObjectCollection<>(nullToEmptyCollection(localRawKeyGroupState)))
+			.build();
 	}
 
 	/**
@@ -585,11 +596,12 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 			mergedRawKeyedState.addAll(rawKeyedState);
 		}
 
-		return new OperatorSubtaskState(
-			new StateObjectCollection<>(mergedManagedOperatorState),
-			new StateObjectCollection<>(mergedRawOperatorState),
-			new StateObjectCollection<>(mergedManagedKeyedState),
-			new StateObjectCollection<>(mergedRawKeyedState));
+		return OperatorSubtaskState.builder()
+			.setManagedOperatorState(new StateObjectCollection<>(mergedManagedOperatorState))
+			.setRawOperatorState(new StateObjectCollection<>(mergedRawOperatorState))
+			.setManagedKeyedState(new StateObjectCollection<>(mergedManagedKeyedState))
+			.setRawKeyedState(new StateObjectCollection<>(mergedRawKeyedState))
+			.build();
 	}
 
 	/**
@@ -627,7 +639,7 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 			checkpointId,
 			timestamp,
 			CheckpointOptions.forCheckpointWithDefaultLocation(),
-			checkpointStorage.resolveCheckpointStorageLocation(checkpointId, CheckpointStorageLocationReference.getDefault()));
+			checkpointStorageAccess.resolveCheckpointStorageLocation(checkpointId, CheckpointStorageLocationReference.getDefault()));
 
 		return new OperatorSnapshotFinalizer(operatorStateResult);
 	}
@@ -719,6 +731,10 @@ public class AbstractStreamOperatorTestHarness<OUT> implements AutoCloseable {
 	@VisibleForTesting
 	public TaskMailbox getTaskMailbox() {
 		return taskMailbox;
+	}
+
+	public void setTimeServiceManagerProvider(InternalTimeServiceManager.Provider timeServiceManagerProvider) {
+		this.timeServiceManagerProvider = timeServiceManagerProvider;
 	}
 
 	private class MockOutput implements Output<StreamRecord<OUT>> {

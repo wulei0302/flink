@@ -22,6 +22,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RuntimeContext;
+import org.apache.flink.api.common.serialization.RuntimeContextInitializationContextAdapters;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.ListStateDescriptor;
@@ -39,10 +40,10 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.functions.sink.TwoPhaseCommitSinkFunction;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
-import org.apache.flink.streaming.connectors.kafka.internal.FlinkKafkaInternalProducer;
-import org.apache.flink.streaming.connectors.kafka.internal.TransactionalIdsGenerator;
-import org.apache.flink.streaming.connectors.kafka.internal.metrics.KafkaMetricMutableWrapper;
+import org.apache.flink.streaming.connectors.kafka.internals.FlinkKafkaInternalProducer;
 import org.apache.flink.streaming.connectors.kafka.internals.KafkaSerializationSchemaWrapper;
+import org.apache.flink.streaming.connectors.kafka.internals.TransactionalIdsGenerator;
+import org.apache.flink.streaming.connectors.kafka.internals.metrics.KafkaMetricMutableWrapper;
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkFixedPartitioner;
 import org.apache.flink.streaming.connectors.kafka.partitioner.FlinkKafkaPartitioner;
 import org.apache.flink.streaming.util.serialization.KeyedSerializationSchema;
@@ -805,7 +806,10 @@ public class FlinkKafkaProducer<IN>
 		}
 
 		if (kafkaSchema != null) {
-			kafkaSchema.open(() -> ctx.getMetricGroup().addGroup("user"));
+			kafkaSchema.open(RuntimeContextInitializationContextAdapters.serializationAdapter(
+					getRuntimeContext(),
+					metricGroup -> metricGroup.addGroup("user")
+			));
 		}
 
 		super.open(configuration);

@@ -49,14 +49,6 @@ implementations.
 
 ### Working with Event Time
 
-By default, Flink will use processing time. To change this, you can set the Time Characteristic:
-
-{% highlight java %}
-final StreamExecutionEnvironment env =
-    StreamExecutionEnvironment.getExecutionEnvironment();
-env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-{% endhighlight %}
-
 If you want to use event time, you will also need to supply a Timestamp Extractor and Watermark
 Generator that Flink will use to track the progress of event time. This will be covered in the
 section below on [Working with Watermarks]({% link
@@ -208,7 +200,7 @@ stream.
 
 Flink has several built-in types of window assigners, which are illustrated below:
 
-<img src="{{ site.baseurl }}/fig/window-assigners.svg" alt="Window assigners" class="center" width="80%" />
+<img src="{% link /fig/window-assigners.svg %}" alt="Window assigners" class="center" width="80%" />
 
 Some examples of what these window assigners might be used for, and how to specify them:
 
@@ -419,9 +411,9 @@ For example, it works to do this:
 {% highlight java %}
 stream
     .keyBy(t -> t.key)
-    .timeWindow(<time specification>)
+    .window(<window assigner>)
     .reduce(<reduce function>)
-    .timeWindowAll(<same time specification>)
+    .windowAll(<same window assigner>)
     .reduce(<same reduce function>)
 {% endhighlight %}
 

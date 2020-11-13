@@ -22,9 +22,11 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.KeyGroupStatePartitionStreamProvider;
-import org.apache.flink.runtime.state.StateSnapshotContext;
+import org.apache.flink.runtime.state.KeyedStateCheckpointOutputStream;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+
+import java.io.Serializable;
 
 /**
  * An entity keeping all the time-related services.
@@ -54,21 +56,31 @@ public interface InternalTimeServiceManager<K> {
 	void advanceWatermark(Watermark watermark) throws Exception;
 
 	/**
-	 * Snapshots the timers to keyed state.
+	 * Snapshots the timers to raw keyed state. This should only be called iff
+	 * {@link #isUsingLegacyRawKeyedStateSnapshots()} returns {@code true}.
 	 *
 	 * <p><b>TODO:</b> This can be removed once heap-based timers are integrated with RocksDB
 	 * incremental snapshots.
 	 */
-	void snapshotState(
-		StateSnapshotContext context,
+	void snapshotToRawKeyedState(
+		KeyedStateCheckpointOutputStream stateCheckpointOutputStream,
 		String operatorName) throws Exception;
+
+	/**
+	 * Flag indicating whether or not the internal timer services should be checkpointed
+	 * with legacy synchronous snapshots.
+	 *
+	 * <p><b>TODO:</b> This can be removed once heap-based timers are integrated with RocksDB
+	 * incremental snapshots.
+	 */
+	boolean isUsingLegacyRawKeyedStateSnapshots();
 
 	/**
 	 * A provider pattern for creating an instance of a {@link InternalTimeServiceManager}.
 	 * Allows substituting the manager that will be used at the runtime.
 	 */
 	@FunctionalInterface
-	interface Provider {
+	interface Provider extends Serializable {
 		<K> InternalTimeServiceManager<K> create(
 			CheckpointableKeyedStateBackend<K> keyedStatedBackend,
 			ClassLoader userClassloader,

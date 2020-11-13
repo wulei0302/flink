@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.executiongraph.IntermediateResultPartition;
@@ -25,14 +26,13 @@ import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
-import org.apache.flink.runtime.io.network.buffer.BufferPoolOwner;
 import org.apache.flink.runtime.io.network.partition.consumer.LocalInputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.RemoteInputChannel;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.function.FunctionWithException;
+import org.apache.flink.util.function.SupplierWithException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,7 +43,6 @@ import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
@@ -71,7 +70,7 @@ import static org.apache.flink.util.Preconditions.checkState;
  *
  * <h2>State management</h2>
  */
-public abstract class ResultPartition implements ResultPartitionWriter, BufferPoolOwner {
+public abstract class ResultPartition implements ResultPartitionWriter {
 
 	protected static final Logger LOG = LoggerFactory.getLogger(ResultPartition.class);
 
@@ -100,7 +99,7 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 
 	private volatile Throwable cause;
 
-	private final FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory;
+	private final SupplierWithException<BufferPool, IOException> bufferPoolFactory;
 
 	/** Used to compress buffer to reduce IO. */
 	@Nullable
@@ -119,7 +118,7 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 		int numTargetKeyGroups,
 		ResultPartitionManager partitionManager,
 		@Nullable BufferCompressor bufferCompressor,
-		FunctionWithException<BufferPoolOwner, BufferPool, IOException> bufferPoolFactory) {
+		SupplierWithException<BufferPool, IOException> bufferPoolFactory) {
 
 		this.owningTaskName = checkNotNull(owningTaskName);
 		Preconditions.checkArgument(0 <= partitionIndex, "The partition index must be positive.");
@@ -145,11 +144,7 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 	public void setup() throws IOException {
 		checkState(this.bufferPool == null, "Bug in result partition setup logic: Already registered buffer pool.");
 
-		BufferPool bufferPool = checkNotNull(bufferPoolFactory.apply(this));
-		checkArgument(bufferPool.getNumberOfRequiredMemorySegments() >= getNumberOfSubpartitions(),
-			"Bug in result partition setup logic: Buffer pool has not enough guaranteed buffers for this result partition.");
-
-		this.bufferPool = bufferPool;
+		this.bufferPool = checkNotNull(bufferPoolFactory.get());
 		partitionManager.registerResultPartition(this);
 	}
 
@@ -157,6 +152,7 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 		return owningTaskName;
 	}
 
+	@Override
 	public ResultPartitionID getPartitionId() {
 		return partitionId;
 	}
@@ -218,6 +214,7 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 		release(null);
 	}
 
+	@Override
 	public void release(Throwable cause) {
 		if (isReleased.compareAndSet(false, true)) {
 			LOG.debug("{}: Releasing {}.", owningTaskName, this);
@@ -264,22 +261,12 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 	}
 
 	/**
-	 * Releases buffers held by this result partition.
-	 *
-	 * <p>This is a callback from the buffer pool, which is registered for result partitions, which
-	 * are back pressure-free.
-	 */
-	@Override
-	public void releaseMemory(int toRelease) throws IOException {
-		// default behavior is nothing to release
-	}
-
-	/**
 	 * Whether this partition is released.
 	 *
 	 * <p>A partition is released when each subpartition is either consumed and communication is closed by consumer
 	 * or failed. A partition is also released if task is cancelled.
 	 */
+	@Override
 	public boolean isReleased() {
 		return isReleased.get();
 	}
@@ -314,5 +301,18 @@ public abstract class ResultPartition implements ResultPartitionWriter, BufferPo
 
 	protected void checkInProduceState() throws IllegalStateException {
 		checkState(!isFinished, "Partition already finished.");
+	}
+
+	@VisibleForTesting
+	public ResultPartitionManager getPartitionManager() {
+		return partitionManager;
+	}
+
+	/**
+	 * Whether the buffer can be compressed or not. Note that event is not compressed because it
+	 * is usually small and the size can become even larger after compression.
+	 */
+	protected boolean canBeCompressed(Buffer buffer) {
+		return bufferCompressor != null && buffer.isBuffer() && buffer.readableBytes() > 0;
 	}
 }
