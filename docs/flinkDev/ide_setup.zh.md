@@ -25,8 +25,8 @@ under the License.
 * Replaced by the TOC
 {:toc}
 
-以下章节描述了如何在 IDE 中导入 Flink 项目以此进行 Flink 本身的源码开发。若需要开发 Flink 应用程序，请参考 [Java API]({{ site.baseurl }}/zh/dev/project-configuration.html) 
-和 [Scala API]({{ site.baseurl }}/zh/dev/project-configuration.html)的快速入门指南。
+以下章节描述了如何在 IDE 中导入 Flink 项目以此进行 Flink 本身的源码开发。若需要开发 Flink 应用程序，请参考 [Java API]({% link dev/project-configuration.zh.md %}) 
+和 [Scala API]({% link dev/project-configuration.zh.md %})的快速入门指南。
 
 **注意：** 当你的 IDE 无法正常运行时，请优先尝试使用 Maven 命令 (`mvn clean package -DskipTests`) 因为这可能是你的 IDE 存在问题或设置不正确.
 
